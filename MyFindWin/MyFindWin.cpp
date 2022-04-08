@@ -12,12 +12,6 @@ usage:
 - grepCPP: using C++ searches binary files
 - grepCPPI: using C++ skipping binary files (like grep -I)
 
-e.g. ./mfg 64 /usr/src/linux  "MAINTAINERS" grep
-
-notes:
-
-grep by default skips binary files (files with \0 in them)
-
 also searching in file path part not just after last  more like find -type f <path> | grep <search_string>
 
 */
