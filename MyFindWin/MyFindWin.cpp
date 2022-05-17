@@ -1,12 +1,12 @@
-/*
+﻿/*
  ============== my find grep: concurrent find respectively concurrent grep ==============
 
 usage:
 .\MyFindWin.exe <number of threads> <path> <search_string> [find|grepCPP|grepCPPI]  # defaults to find
 
-    use * as <search_string> to list all files
+    if you use * as <search_string>: it lists ALL STREAMS for FILES and FOLDERS except ::$DATA and all files in output.txt
 
-    Program will save found files in: "output.txt"
+    else: Program will save found files in: "output.txt"
 
 - find: C++ string search on whole file path (i.e. find xyz will match both: c:\Users\xyz\Desktop\xyz.txt)
 - grepCPP: using C++ searches binary files
@@ -14,7 +14,18 @@ usage:
 
 also searching in file path part not just after last  more like find -type f <path> | grep <search_string>
 
+
+TODO:
+
+- fix problem with LONG PATHS: \\?\D:\DROPPYBACKUP20220402\20220402_204329\Dropbox\saved Websites\Derivatives Analytics with Python  Data Analysis, Models, Simulation, Calibration and Hedging (The Wiley Finance Series) eBook  Yves Hilpisch  Amazon.de  Kindle-Shop-Dateien
+
 */
+#include <Windows.h>
+#include <tchar.h>
+#include <strsafe.h>
+#include <atlstr.h>
+#include <WinBase.h>
+#include <fileapi.h>
 
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -54,12 +65,13 @@ thread_local std::vector<std::string> tls_directories;
 
 std::string arg_source, arg_dest;
 
-// global directory vectors & mutexes
+// global filename and directory vectors & mutexes
 // each thread puts directories into global vectors
 
 #define NR_GLOBAL_FILENAME_MUTEXES 8 // also works surprisingly well with 1
 std::array<std::mutex, NR_GLOBAL_FILENAME_MUTEXES> global_filename_mutexes; // mutexes for the following:
 std::array<std::vector<std::string>, NR_GLOBAL_FILENAME_MUTEXES> filename_array_of_vectors;
+
 #define NR_GLOBAL_DIRECTORIES_MUTEXES 8 // also works surprisingly well with 1
 std::array<std::mutex, NR_GLOBAL_DIRECTORIES_MUTEXES> global_directories_mutexes; // mutexes for the following:
 std::array<std::vector<std::string>, NR_GLOBAL_DIRECTORIES_MUTEXES> directories_array_of_vectors;
@@ -92,7 +104,7 @@ std::string exe_name;
 
 class Worker {
 private: 
-        const int worker_id = -171717;
+       const int worker_id = -171717;
        std::string start_with_path;
        // smaller means earlier exit on binary files 
        unsigned int buffer_size = 1024 * 2 + 1; //+ 1 for memalign because read_size == buffer_size - 1; for \0 termination
@@ -100,7 +112,8 @@ private:
        char* buffer;  // move malloc in Worker class, to alloc once.
 
 public:
-    Worker(int n, std::string s) : worker_id(n), start_with_path(s) {
+    Worker(int n, std::string s) : worker_id(n), start_with_path(s) 
+    {
         if (worker_id == -42) { // temp worker for startup
             //buffer = (char*)malloc(buffer_size);
             int x;
@@ -133,7 +146,7 @@ public:
         }
     }
 
-    int find_or_grep(std::string filename) {
+    int find_or_grep(std::wstring & filename) {
         int hash = -1;
 
         if (searching_for == "*") {
@@ -142,9 +155,10 @@ public:
         }
 
         else if (search_mode == "grepCPP" || search_mode == "grep" ) { // using C++ std
+            
             std::ifstream src(filename);
             if (!src.good()) {
-                std::cout << "error with filename: " << filename << std::endl;
+                std::wcout << "error with filename: " << filename << std::endl;
             }
             unsigned long long linenr = 0;
 
@@ -158,7 +172,8 @@ public:
                     std::lock_guard<std::mutex> lock(coutmtx);
                     //std::cout << "linenr: " << linenr << " pos: " << n << " in file: " << filename
                     //          << " " << line.substr(0, 79) << std::endl;
-                    std::cout << filename << ": " << line.substr(0, 255) << std::endl;
+                    std::wcout << filename << ": line# " << linenr << ": ";
+                    std::cout << line.substr(0, 255) << std::endl;
                     hits++;
                     hash = 1;
                 }
@@ -166,10 +181,15 @@ public:
             src.close();
 
         }
+        
         else if (search_mode == "grepCPPI" || search_mode == "grepI") { // no binary
+            //::_wcslwr_s(argv[1], ::wcslen(argv[1]) + 1);
+            //auto locase(name);
+            //::_wcslwr_s((wchar_t*)locase.data(), locase.size() + 1);
+
             std::ifstream src(filename);
             if (!src.good()) {
-                std::cout << "error with filename: " << filename << std::endl;
+                std::wcout << "error with filename: " << filename << std::endl;
                 //throw std::ios::failure("src is no good: " ); don't throw or else atomic won't be decremented
             }
             unsigned long long linenr = 0;
@@ -191,7 +211,8 @@ public:
                 while ((n = line.find(searching_for, n)) != std::string::npos) {
                     n += searching_for.length();
                     std::lock_guard<std::mutex> lock(coutmtx);
-                    std::cout << filename << ": " << line.substr(0, 79) << std::endl;
+                    std::wcout << "found matching file: " << filename << ": line#: " << linenr;
+                    std::cout << line.substr(0, 260) << std::endl;
                     hits++;
                     hash = 1;
                 }
@@ -200,14 +221,15 @@ public:
 
         }
         else {  // find-mode
-            std::string s = filename;
-            if (s.find(searching_for) != std::string::npos) {
+            std::wstring & s = filename;
+            std::wstring wsearching_for = ConvertUtf8_2_uni(searching_for);
+            if (s.find(wsearching_for) != std::string::npos) {
                 std::lock_guard<std::mutex> lock(coutmtx);
-                std::cout << "" << filename << std::endl;
+                std::wcout << "found matching file: " << filename << std::endl;
                 hash = hits++;
             }
         }
-
+        
         return hash;
     }
 
@@ -222,7 +244,7 @@ private:
 
 #define RETRY_COUNT 0 // a few or a few dozen works equally well; deprecated with atomics
         int retry_count = RETRY_COUNT;
-        int dont_wait_forever = 16; // to eliminate endless waiting at the 'end of the tree':few dirs left
+        int dont_wait_forever = 160; // to eliminate endless waiting at the 'end of the tree':few dirs left
 
     check_again:
         int proceed_new = 0;
@@ -318,7 +340,7 @@ private:
             }
 
             tls_filenames.clear();
-            // save N-1 directories to global for other threads to pick up
+            // save remaining N-1 directories to global for other threads to pick up
             {
                 std::lock_guard<std::mutex> lock(global_directories_mutexes[worker_id % NR_GLOBAL_DIRECTORIES_MUTEXES]);
                 for (auto const& v : tls_directories) {
@@ -333,82 +355,207 @@ private:
         atomic_running_threads[worker_id % NR_ATOMICS]--;
     }
 
+    public:
+    std::wstring ConvertUtf8_2_uni(const std::string& utf8)
+    {
+        if (utf8.empty()) return std::wstring{};
+        
+        std::wstring wstring{};
+        CStringW uni;
+        int cc = 0;
+        // get length (cc) of the new widechar excluding the \0 terminator first
+        
+        if ((cc = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, NULL, 0) - 1) > 0)
+        {
+            // convert
+            wstring.resize(cc);
+            //wchar_t* buf = uni.GetBuffer(cc);
+            MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wstring.data(), cc);
+            //uni.ReleaseBuffer();
+        }
+        return wstring;
+    }
+    std::string ConvertUni2utf8(const WCHAR* uni)
+    {
+        std::string s;
+        int cc = 0;
+        if ((cc = WideCharToMultiByte(CP_UTF8, 0, uni, -1, NULL, 0, 0, 0) - 1) > 0)
+        {
+
+            s.resize(cc);
+            WideCharToMultiByte(CP_UTF8, 0, uni, -1, s.data(), cc, 0, 0);
+        }
+        return s;
+    }
+
+    private:
     int do_dir_walking(const std::string& sInputPath) {
 
-        auto ec = std::error_code();
-        try {
+        std::wstring wInputPath = ConvertUtf8_2_uni(sInputPath + std::string{"\\*"});
 
-            std::filesystem::path path(sInputPath);
-            //path = std::filesystem::canonical(path);
+        //WCHAR filename[33000];
 
-            std::filesystem::directory_iterator dir_iter(path, ec);
-            //std::filesystem::directory_options::skip_permission_denied);
-            std::filesystem::directory_iterator end;
+        WIN32_FIND_DATA w32fd;
+        HANDLE hFindFirst = ::FindFirstFileEx(
+            //LR"(c:\users\abc\source\myfindwin\x64\debug\*)",                       // lpFileName
+            (LPCWSTR)wInputPath.c_str(),
+            FindExInfoBasic,            // fInfoLevelId
+            &w32fd,                     // lpFindFileData
+            FindExSearchNameMatch,      // fSearchOp
+            (void*)0,                   // lpSearchFilter
+            FIND_FIRST_EX_LARGE_FETCH
+        );
 
-            for (; dir_iter != end; dir_iter.increment(ec))
+        if (hFindFirst == INVALID_HANDLE_VALUE)
+        {
+            DWORD error = GetLastError();
+            
+
+            if ( search_mode == "find" &&   error == 5) // access is denied
             {
-                if (ec)
-                {
-                    std::cout << "EC1 worker: " << ec << sInputPath <<  std::endl;
-                    std::cout << "EC1 worker: " << ec.message() << std::endl;
-                    continue;
+                    //tls_filenames.emplace_back(sInputPath + "\\****ACCESS_DENIED****\\"); // put in output.txt
+            }
+            else
+            {
+                printf("FindFirstFileEx failed (%d) : %s\n", error, sInputPath.data());
+            }
+
+            return 0;
+        }
+        else
+        {
+            //std::cout << "handle ok" << std::endl;
+            if ( (w32fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ) //== FILE_ATTRIBUTE_DIRECTORY )
+            {
+                std::wstring ww32fdcFileName(w32fd.cFileName);
+                if (ww32fdcFileName != L"." && ww32fdcFileName != L"..") {
+                //if ( (w32fd.cFileName[0] != L'.' && w32fd.cFileName[1] != L'\0' ) && (w32fd.cFileName[0] != L'.' && w32fd.cFileName[1] != L'.' && w32fd.cFileName[2] != L'\0' )) {
+                    //std::lock_guard<std::mutex> lock(coutmtx);
+                    //printf("firstDIRECTORY: %ws\n", w32fd.cFileName);
+                    std::string PathAsUtf8 = ConvertUni2utf8(w32fd.cFileName);
+                    //std::cout << "dir as utf8: " << PathAsUtf8 << std::endl;
+                    std::string FullPath = sInputPath + "\\" + PathAsUtf8;
+                    //std::cout << "FullPath: " << FullPath << std::endl;
+                    tls_directories.emplace_back(FullPath);
                 }
+                else
+                {
+                    //std::lock_guard<std::mutex> lock(coutmtx);
+                    //std::wcout << "not matching: " << std::wstring(w32fd.cFileName) << std::endl;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < 22; i++)
+                    printf("ERROR ERROR ERRROR - also add FirstFile/Dir\n");
+                printf("firstXFile: %ws ALWAYS . as FindFirstFile? \n", w32fd.cFileName);
 
-                std::filesystem::path path = dir_iter->path();
+            }
+
+            while (FindNextFile(hFindFirst, &w32fd))
+            {
                 
-                if ((std::filesystem::is_directory(path, ec) || std::filesystem::is_regular_file(path, ec)) || std::filesystem::is_symlink(path, ec)) {
+                if ((w32fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ) //== FILE_ATTRIBUTE_DIRECTORY)
+                {
+                    std::wstring ww32fdcFileName(w32fd.cFileName);
 
-                    if (ec)
-                    {
-                        std::cout << "EC1 worker: " << ec << path << std::endl;
-                        std::cout << "EC1 worker: " << ec.message() << std::endl;
-                        continue;
-                    }
-                    
-                    std::string path_entry = path.string();
+                    //if ( ( (w32fd.cFileName[0] != L'.') || (w32fd.cFileName[1] != L'\0') ) && ( (w32fd.cFileName[0] != L'.') || ( w32fd.cFileName[1] != L'.') || (w32fd.cFileName[2] != L'\0') )) {
+                    if( ww32fdcFileName != L"." && ww32fdcFileName != L".." ){
+                        //std::lock_guard<std::mutex> lock(coutmtx);
+                        //printf("DIRECTORY: %ws\n", w32fd.cFileName);
+                        std::string PathAsUtf8 = ConvertUni2utf8(w32fd.cFileName);
+                        std::string FullPath = sInputPath + "\\" + PathAsUtf8;
+                        tls_directories.emplace_back(FullPath);
 
-                    //std::cout << "current: " << path_entry << std::endl;
-                    if (std::filesystem::is_directory(path, ec) && !std::filesystem::is_symlink(path, ec)) {
-                        tls_directories.emplace_back(path_entry + "\\");
-                    }
-                    
-                    else if (std::filesystem::is_symlink(path, ec)) {
-                        std::cout << "XXXX: FOUND symlink on WINDOWS!?!?: " << path << std::endl;
-                    }
-                    else if (std::filesystem::is_regular_file(path, ec)) {
-                        
-                        int hash = -1;
-                        hash = find_or_grep(path_entry);
-                        //std::cout << path_entry.c_str() << std::endl;
-                        if (hash != -1) {
-                            tls_filenames.emplace_back(path_entry);
+                        if (searching_for == std::string{ '*' }) {
+                            findStreams(FullPath, 1);
                         }
                     }
+                    else {
+                        //std::lock_guard<std::mutex> lock(coutmtx);
+                        //std::wcout << "not matching: " << std::wstring(w32fd.cFileName) << std::endl;
+                    }
                 }
-                
-            } // end while dir iteration
+                else
+                {
+                   
+                    std::string PathAsUtf8 = ConvertUni2utf8(w32fd.cFileName);
+                    std::string FullPath = sInputPath + "\\" + PathAsUtf8;
 
-    }
-        catch (std::system_error const& ex) {
-            std::cout << "EXCPTN:system_error "<< ex.code().message() << ex.code() << ex.what() << std::endl;
-        
-        }
-        catch (std::filesystem::filesystem_error const& ex) {
-            std::cout
-                << "what():  " << ex.what() << '\n'
-                << "path1(): " << ex.path1() << '\n'
-                << "path2(): " << ex.path2() << '\n'
-                << "code().value():    " << ex.code().value() << '\n'
-                << "code().message():  " << ex.code().message() << '\n'
-                << "code().category(): " << ex.code().category().name() << '\n';
+                    if (searching_for == std::string{ '*' }) {
+                        tls_filenames.emplace_back(FullPath);
+                        
+                        findStreams(FullPath, 0);
 
+                    }
+                    else {
+                        int hash = -1;
+                        std::wstring tmp = ConvertUtf8_2_uni(FullPath);
+                        hash = find_or_grep( tmp );
+                        //std::cout << path_entry.c_str() << std::endl;
+                        if (hash != -1) {
+                            tls_filenames.emplace_back(FullPath);
+                        }
+                    }
+
+                }
+            }
+
+            FindClose(hFindFirst);
         }
-        catch (const std::exception& e) {
-            std::cerr << "exception: do_dir_walking(): " << e.what() << '\n';
-            std::cerr << "Type:    " << typeid(e).name() << "\n";
-        }
-        return 0;
+        return 27;
+
     } // end of do-dir-walking
+
+
+    void findStreams(std::string & FullPath, bool isFolder) {
+        // streams:
+        WIN32_FIND_STREAM_DATA wfstreamdata;
+        HANDLE streamHandle = FindFirstStreamW(
+            ConvertUtf8_2_uni(FullPath).c_str(),
+            FindStreamInfoStandard,
+            &wfstreamdata,
+            0);
+        if (streamHandle == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == 38)
+            {
+                if (isFolder == 0) // files without stream are suspicious
+                {
+                    std::lock_guard<std::mutex> lock(coutmtx);
+                    std::cout << "StreamHandle invalid: error: no stream found in: " << FullPath << std::endl;
+                }
+            }
+            else if (GetLastError() == 5)
+            {
+                // skip Access Denied Error
+            }
+            else
+            {
+                std::lock_guard<std::mutex> lock(coutmtx);
+                std::cout << "StreamHandle invalid: error: " << GetLastError() << " in: " << FullPath << std::endl;
+            }
+            return;
+        }
+        while (streamHandle && GetLastError() != 5 && GetLastError() != 3 && GetLastError() != 2) {
+            //std::wcout << "Streamhandle ok: " << wfstreamdata.cStreamName << std::endl;
+
+            std::wstring streamName{ wfstreamdata.cStreamName };
+            if (streamName != std::wstring{ L"::$DATA" })
+            {
+                std::lock_guard<std::mutex> lock(coutmtx);
+                
+                std::wstring FolderOrFile = isFolder ? std::wstring(L"FOLDER: ") : std::wstring(L"FILE: ");
+                LARGE_INTEGER size = wfstreamdata.StreamSize;
+                LONGLONG lsize = size.QuadPart;
+                std::wstring alertSize = lsize > 1024 ? L" **** ALERT ****" : L"";
+                std::wcout << "NON default streamname: " << wfstreamdata.cStreamName << " in " << FolderOrFile << ConvertUtf8_2_uni(FullPath) << " size: " << lsize << alertSize << std::endl;
+            }
+
+            if (!FindNextStreamW(streamHandle, &wfstreamdata)) {
+                break;
+            }
+        }
+    }
 
 }; // end of class Worker
 
@@ -422,7 +569,6 @@ void do_startup_file_walking(std::string starting_path) {
         std::filesystem::directory_iterator dir_iter(startpath, skip, ec);
 		std::filesystem::directory_iterator end;
 
-		//while (dir_iter != end) {
         for(; dir_iter != end; dir_iter.increment(ec) )
         {
             if (ec)
@@ -431,9 +577,7 @@ void do_startup_file_walking(std::string starting_path) {
                 std::cerr << "EC1: " << ec.message() << std::endl;
                 continue;
             }
-            //std::filesystem::path path = dir_e.path();
 			std::filesystem::path path = dir_iter->path();
-            //std::cout << "PATH: " << path << std::endl;
             
 			if ((std::filesystem::is_directory(path, ec) || std::filesystem::is_regular_file(path, ec)) && !std::filesystem::is_symlink(path, ec)) {
                 if (ec)
@@ -445,21 +589,19 @@ void do_startup_file_walking(std::string starting_path) {
           
 				std::string path_entry = std::filesystem::canonical(path).string();
 				if (std::filesystem::is_directory(path)) {
-                    //std::cout << "DIRECTORY: " << path << std::endl;
-                    global_directories.emplace_back(path_entry); // + "/");
+                    global_directories.emplace_back(path_entry); 
 				}
 				else if (std::filesystem::is_regular_file(path)) {
-                    //std::cout << path << std::endl;
-					int hash = w.find_or_grep(path_entry);
                     
+                    std::wstring wpath_entry = std::filesystem::canonical(path).wstring();
+                    int hash = w.find_or_grep(wpath_entry);
+
 					if (hash != -1) {
-                        global_filenames.emplace_back(path_entry); // +";" + std::to_string(hash));
+                        global_filenames.emplace_back(path_entry);
 					}
 				}
                 
 			}
-            
-			//dir_iter.increment(ec);
 		}
 	}
     catch (std::filesystem::filesystem_error const& ex) {
@@ -472,20 +614,17 @@ void do_startup_file_walking(std::string starting_path) {
             << "code().category(): " << ex.code().category().name() << '\n';
 
     }
-	//catch (const std::exception& e) {
-		//std::cerr << "exception: do_startup_file_walking(): " << e.what() << '\n';
-       // std::cerr << "exception: e.msg: " << ec.message() <<  std::endl;
-	//}
+	catch (const std::exception& e) {
+		std::cerr << "exception: do_startup_file_walking(): " << e.what() << '\n';
+	}
 }
 
-int main(int argc, char* argv[]) {
-    
+
+int main(int argc, char * argv[]) {
     std::locale x("en_US.UTF-8");
     std::locale::global(x);
+    _setmaxstdio(2048);
 
-    
-
-    
     exe_name = argv[0];
 
     int n_threads = -1;
@@ -504,6 +643,7 @@ int main(int argc, char* argv[]) {
     std::string inPath;
     if (argc >= 4) {
         inPath = std::string(argv[2]);
+        std::cout << "We are searching in Directory: " << inPath << std::endl;
     }
     else {
         std::cout << "usage: " << argv[0] << " <number of threads> <path> <search_string> [grep|grepI|find]" << "\ndefault is find; use * as <search_string> to list all files; Output is in output.txt" << std::endl;
@@ -529,8 +669,6 @@ int main(int argc, char* argv[]) {
 
     if (inPath != "") {
         do_startup_file_walking(inPath);
-        //do_startup_file_walking(std::wstring(L"D:\\tmp"));
-        //do_startup_file_walking(std::wstring(L"D:\\"));
     }
     else {
         //do_startup_file_walking("./");
@@ -542,14 +680,11 @@ int main(int argc, char* argv[]) {
     std::cout << "starting_dirs: " << starting_dirs << " nthreads " << n_threads << std::endl;
 #endif
 
-   // std::cout << "Exiting HERE" << std::endl;
-   // return 1;
-
-#ifdef DEBUG
+#ifdef DEBUG2
     std::cout << "global_dirs size: " << starting_dirs << std::endl;
 #endif    
 
-#ifdef DEBUG
+#ifdef DEBUG2
     if (starting_dirs < n_threads) {
         std::cout << "less dirs than threads to begin with" << std::endl;
     }
@@ -581,7 +716,7 @@ int main(int argc, char* argv[]) {
         global_directories.pop_back();
     }
 
-#ifdef DEBUG
+#ifdef DEBUG2
     for (int i = 0; i < NR_GLOBAL_DIRECTORIES_MUTEXES; i++) {
         std::cout << "directories_array_of_vectors[" << i << "].size(): " << directories_array_of_vectors[i].size() << std::endl;
         for (auto const& v : directories_array_of_vectors[i]) {
@@ -593,13 +728,14 @@ int main(int argc, char* argv[]) {
         std::cout << "starting glob_dirs: " << v << std::endl;
     }
 #endif    
+    
 
     // start threads(Worker)
     for (int i = 0; i < n_threads; ++i) {
         threads.emplace_back(std::ref(workers[i]));
     }
 
-#ifdef DEBUG     
+#ifdef DEBUG2     
     std::cout << "in main: workers size: " << workers.size() << std::endl;
     std::cout << "in main: threads size: " << threads.size() << std::endl;
 #endif   
@@ -621,7 +757,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (global_directories.empty()) {
-#ifdef DEBUG        
+#ifdef DEBUG2        
         std::cout << "global_directories is empty" << std::endl;
 #endif
     }
@@ -677,13 +813,13 @@ int main(int argc, char* argv[]) {
 #endif
 
 #ifdef OUTPUT
-            dest << v << "\n"; // WRITE TO dest == ./output file
+            dest << v << "\r\n"; // WRITE TO dest == ./output file
 #endif
         }
     }
 #ifdef OUTPUT
     for (auto const& v : global_filenames) {
-        dest << v << "\n";
+        dest << v << "\r\n";
     }
     dest.close();
 #endif
