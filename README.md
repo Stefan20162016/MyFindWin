@@ -19,7 +19,14 @@ NON default streamname: :xdg.referrer.url:$DATA in FILE: C:\Users\All Users\Sams
 NON default streamname: :Win32App_1:$DATA in FOLDER: C:\Program Files\Adblock Plus for IE size: 0   
 NON default streamname: :Win32App_1:$DATA in FOLDER: C:\Program Files\FileZilla FTP Client size: 0
 ```  
-  
+in unusual files like "con":
+``` 
+type poppad1.exe > \\.\D:\demo\notlegal\con:evilEXE
+wmic process call create \\.\D:\demo\notlegal\con:evilEXE
+.\MyFindWin 1 . *:
+StreamHandle invalid: error: 87 in: D:\demo\notlegal\con
+```  
+   
 e.g. List all files in C:\:
   - .\MyFindWin.exe 64 C:\ *
 
