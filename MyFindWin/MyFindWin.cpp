@@ -27,6 +27,8 @@ TODO:
 #include <WinBase.h>
 #include <fileapi.h>
 
+#include <memory.h>
+
 #include <sys/stat.h>
 #include <fcntl.h>
 //#include <unistd.h>
@@ -101,6 +103,24 @@ uint64_t hits{ 0 };
 
 std::string exe_name;
 
+void* memrchr(const void* buf, int c, size_t num)
+{
+    unsigned char* pMem = (unsigned char*)buf;
+
+    for (;;) {
+        if (num-- == 0) {
+            return NULL;
+        }
+
+        if (*pMem-- == (unsigned char)c) {
+            break;
+        }
+
+    }
+
+    return (void*)(pMem + 1);
+
+}
 
 class Worker {
 private: 
@@ -115,20 +135,20 @@ public:
     Worker(int n, std::string s) : worker_id(n), start_with_path(s) 
     {
         if (worker_id == -42) { // temp worker for startup
-            //buffer = (char*)malloc(buffer_size);
+            buffer = (char*)malloc(buffer_size);
             int x;
         }
     }
     ~Worker() {
         if (worker_id == -42) {
-            //free(buffer);
+            free(buffer);
             int x;
         }
     }
     void operator()() {
         try {
             
-            //buffer = (char*)malloc(buffer_size);
+            buffer = (char*)malloc(buffer_size);
             if (start_with_path != "") {
                 tls_path = start_with_path;
                 do_linear_descent();
@@ -138,7 +158,7 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(2 + worker_id % 7));
                 working();
             }
-            //free(buffer);
+            free(buffer);
         }
         catch (...) {
             std::lock_guard<std::mutex> lock(global_exceptmutex);
@@ -153,6 +173,131 @@ public:
             hash = 0; // find/list all files
             //std::cout << "We are in * search mode " << std::endl;
         }
+
+        /// <summary>
+        ///  new win32 Grep
+        /// </summary>
+        /// <param name="filename"></param>
+        /// <returns></returns>
+    
+        else if (search_mode == "grep32")
+        {
+            char* buffer_old = NULL;
+            #define SAVED_BUFFER_SIZE 256        // end of last buffer + start of next buffer
+            #define SAVED_BUFFER_HALF_SIZE 128   // save HALF_SIZE bytes from the end of the current buffer 
+            char saved_buffer[SAVED_BUFFER_SIZE]; // to check for matches overlapping consecutive buffers [...ma][tch...]
+            const char* search_string = searching_for.c_str();
+            int fd;
+            HANDLE hFile = CreateFile(filename.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFile == INVALID_HANDLE_VALUE)
+                return hash;
+
+            
+
+           // printf("**in FILE**: %ws\n", filename.c_str() );
+
+            int check_saved_buffer = 0;
+            bool found_string = false;
+            DWORD nIn=0;
+            
+            while (ReadFile(hFile, buffer, read_size, &nIn, NULL) && nIn)
+            {
+                {std::lock_guard<std::mutex> lock(coutmtx);
+                //printf("**in ReadFile**: %ws\n", filename.c_str());
+                }
+                void* position = NULL;
+                position = memchr(buffer, '\0', nIn);
+                if (position)
+                {
+                    
+                    //printf("**skipping FILE**: %ws\n", filename.c_str());
+                    //std::wcout << "***skipping FILE***" <<  filename << " END"<< std::endl;
+                    hash = -1; // skip binary files
+                    break;
+                }
+                else
+                {
+                    buffer[nIn] = '\0';
+                    if (check_saved_buffer)
+                    {
+                        check_saved_buffer = 0;
+                        if ((searching_for.length() > 1) && nIn)
+                        {
+                            int min = nIn < searching_for.length() - 1 ? nIn : searching_for.length() - 1;
+                            memcpy(saved_buffer + SAVED_BUFFER_HALF_SIZE, buffer, min);
+                            saved_buffer[SAVED_BUFFER_HALF_SIZE + min] = '\0';
+                            char* saved_buffer_start = saved_buffer + SAVED_BUFFER_HALF_SIZE - 1 - (searching_for.length() - 2);
+                            char* pos = strstr(saved_buffer_start, search_string);
+                            if (pos)
+                            {
+                                std::lock_guard<std::mutex> lock(coutmtx);
+                                hits++;
+                                printf("******CORNER CASE******: %ws: %s\n", filename.c_str(), saved_buffer);
+                                hash = 272727;
+                            }
+                        }
+                    }
+
+                    if (nIn == read_size && read_size >= SAVED_BUFFER_HALF_SIZE)
+                    {
+                        // save end of the buffer
+                        check_saved_buffer = 1;
+                        memcpy(saved_buffer, buffer + read_size - SAVED_BUFFER_HALF_SIZE, SAVED_BUFFER_HALF_SIZE);
+                    }
+
+                    char* ptr_to_next_pos = NULL;
+                    char* bckp_buffer = buffer;
+                    char* pos;
+                    while ((pos = strstr(bckp_buffer, search_string))) {
+                        if (hash != 272727) {  // keep the 272727 hash to count corner-cases
+                            hash = 1;
+                        }
+                        hits++;
+                        int idx_of_string = pos - buffer;
+                        void* newline_before = memrchr(buffer, '\n', idx_of_string + 1);  // from buffer to end and reverse!
+                        if (!newline_before) {
+                            newline_before = buffer - 1;
+                        }
+                        //printf("file %s nl_before: %.20s\n", filename, (char*)newline_before + 1);
+                        int rest = nIn - idx_of_string;
+                        void* newline_after = memchr(pos, '\n', rest);
+                        if (!newline_after) {
+                            newline_after = buffer + nIn;  // CHANGE n was read_size be careful: read reads bufsize-1 bytes
+                        }
+                        
+
+                        int line_size = (char*)newline_after - (char*)newline_before;
+                        char* sptr = (char*)newline_before + 1;
+                        int maxlen = line_size - 1;
+                        if (maxlen > 80)
+                            maxlen = 80;
+                        { std::lock_guard<std::mutex> lock(coutmtx);
+                        printf("%ws: %.*s\n", filename.c_str(), maxlen, sptr);
+                        }
+                        
+                        ptr_to_next_pos = pos + searching_for.length();
+                        if (ptr_to_next_pos < buffer + nIn) {
+                            bckp_buffer = ptr_to_next_pos;
+                        }
+                        else {
+                            break;
+                        }
+
+                    } // enf of while
+
+                    if (nIn < read_size)
+                        break; // saves one read call
+                }// end while
+            } // end if hFile
+
+            CloseHandle(hFile);
+            
+        }
+        /// 
+        ///
+        ///  END of new Win32 Grep
+        /// 
+        /// 
 
         else if (search_mode == "grepCPP" || search_mode == "grep" ) { // using C++ std
             
@@ -244,7 +389,7 @@ private:
 
 #define RETRY_COUNT 0 // a few or a few dozen works equally well; deprecated with atomics
         int retry_count = RETRY_COUNT;
-        int dont_wait_forever = 160; // to eliminate endless waiting at the 'end of the tree':few dirs left
+        int dont_wait_forever = 16011; // to eliminate endless waiting at the 'end of the tree':few dirs left
 
     check_again:
         int proceed_new = 0;
@@ -621,6 +766,7 @@ void do_startup_file_walking(std::string starting_path) {
 
 
 int main(int argc, char * argv[]) {
+    
     std::locale x("en_US.UTF-8");
     std::locale::global(x);
     _setmaxstdio(2048);
@@ -752,7 +898,8 @@ int main(int argc, char * argv[]) {
             }
         }
         catch (std::exception const& ex) {
-            std::cerr << "EZZOZ exception: " << ex.what() << std::endl;
+            std::cerr << "EZZOZ1 exception: "  << std::endl;
+            std::cerr << "EZZOZ2 exception: " <<  ex.what() << std::endl;
         }
     }
 
